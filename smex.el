@@ -138,6 +138,35 @@ Set this to nil to disable fuzzy matching."
                    map)
   "Keymap used in the minibuffer.")
 
+(defun smex-extract-command-name (pretty-name)
+  "Given a string \"foo (C-c f)\", return \"foo\"."
+  (car (split-string pretty-name " ")))
+
+(defvar smex-command-keybindings
+  (make-hash-table)
+  "A keybinding (a string) for each command symbol.")
+
+(defun smex-update-command-keybindings ()
+  "Ensure `smex-command-keybindings' contains the latest keybindings.
+This can take ~5 seconds, so we only run when Emacs
+is idle."
+  (interactive)
+  (clrhash smex-command-keybindings)
+  (mapc (lambda (symbol-with-index)
+          (let* ((symbol (car symbol-with-index))
+                 (keybinding (smex-find-keybinding symbol)))
+            (if keybinding
+                (puthash symbol keybinding smex-command-keybindings))))
+        smex-cache))
+
+(defun smex-find-keybinding (command)
+  "Find the first keybinding for COMMAND, if one exists.
+Uses the currently active keymap."
+  (let* ((keybindings (where-is-internal command))
+         (first-binding (car keybindings)))
+    (when first-binding
+      (key-description first-binding))))
+
 (defun smex-prepare-ido-bindings ()
   (setq ido-completion-map
         (make-composed-keymap '(smex-map ido-completion-map))))
@@ -153,13 +182,15 @@ Set this to nil to disable fuzzy matching."
             (ido-enable-flex-matching smex-flex-matching)
             (ido-max-prospects 10)
             (minibuffer-completion-table choices))
-        (ido-completing-read (smex-prompt-with-prefix-arg) choices nil nil
-                             initial-input 'extended-command-history (car choices)))
+        (smex-extract-command-name
+         (ido-completing-read (smex-prompt-with-prefix-arg) choices nil nil
+                              initial-input 'extended-command-history (car choices))))
     (require 'ivy)
-    (ivy-read (smex-prompt-with-prefix-arg) choices
-              :keymap smex-map
-              :history 'extended-command-history
-              :preselect (car choices))))
+    (smex-extract-command-name
+     (ivy-read (smex-prompt-with-prefix-arg) choices
+               :keymap smex-map
+               :history 'extended-command-history
+               :preselect (car choices)))))
 
 (defun smex-prompt-with-prefix-arg ()
   (if (not current-prefix-arg)
@@ -199,7 +230,15 @@ Set this to nil to disable fuzzy matching."
   (setq smex-ido-cache (smex-convert-for-ido smex-cache)))
 
 (defun smex-convert-for-ido (command-items)
-  (mapcar (lambda (command-item) (symbol-name (car command-item))) command-items))
+  (mapcar (lambda (command-item)
+            (let* ((command (car command-item))
+                   (command-name (symbol-name command))
+                   (keybinding
+                    (gethash command smex-command-keybindings)))
+              (if keybinding
+                  (format "%s (%s)" command-name keybinding)
+                command-name)))
+          command-items))
 
 (defun smex-restore-history ()
   "Rearranges `smex-cache' according to `smex-history'"
@@ -239,11 +278,12 @@ Set this to nil to disable fuzzy matching."
     (unless (= i smex-command-count)
       (setq smex-command-count i))))
 
-(defun smex-auto-update (&optional idle-time)
-  "Update Smex when Emacs has been idle for IDLE-TIME."
-  (unless idle-time (setq idle-time 60))
-  (run-with-idle-timer idle-time t
-                       '(lambda () (if (smex-detect-new-commands) (smex-update)))))
+(defun smex-background-update ()
+  "Update Smex when Emacs has been idle for 20 seconds."
+  (run-with-idle-timer 20 t
+                       '(lambda () (when (smex-detect-new-commands)
+                                     (smex-update-command-keybindings)
+                                     (smex-update)))))
 
 ;;;###autoload
 (defun smex-initialize ()
@@ -254,6 +294,7 @@ Set this to nil to disable fuzzy matching."
   (smex-detect-new-commands)
   (smex-rebuild-cache)
   (add-hook 'kill-emacs-hook 'smex-save-to-file)
+  (smex-background-update)
   (setq smex-initialized-p t))
 
 (defun smex-initialize-ido ()
